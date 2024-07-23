@@ -9,6 +9,12 @@ from argparse import ArgumentParser
 from http import HTTPStatus
 from pathlib import Path
 from typing import Annotated, Literal, Optional
+import whisper
+import time
+import os
+import aiohttp
+import asyncio
+from fastapi import Body
 
 import librosa
 import numpy as np
@@ -335,6 +341,7 @@ async def inference_async(req: InvokeRequest):
 async def buffer_to_async_generator(buffer):
     yield buffer
 
+STT_model = whisper.load_model("tiny.en")
 
 @routes.http.post("/v1/invoke")
 async def api_invoke_model(
@@ -343,6 +350,36 @@ async def api_invoke_model(
     """
     Invoke model and generate audio
     """
+
+
+    temp_file_path = f"/tmp/temp_{int(time.time())}"
+
+    if not os.path.exists(temp_file_path):  # 音频未缓存，下载音频
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(req.reference_audio) as response:
+                    if response.status == 200:
+                        audio_data = await response.read()
+                        with open(temp_file_path, 'wb') as temp_file:
+                            temp_file.write(audio_data)
+                    else:
+                        return JSONResponse(status_code=500, content={"message": f"Error downloading audio file: HTTP {response.status}", "processing_time": "N/A"})
+        except Exception as e:
+            return JSONResponse(status_code=500, content={"message": f"Error downloading audio file: {str(e)}", "processing_time": "N/A"})
+
+   
+    try:  # 语音转文字
+        start_time = time.time() 
+        result = STT_model.transcribe(temp_file_path)
+        req.reference_text = result["text"]
+        
+        end_time = time.time()  
+        processing_time = end_time - start_time  
+        print(processing_time)
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"message": str(e), "processing_time": "N/A"})
+
+    
 
     if args.max_text_length > 0 and len(req.text) > args.max_text_length:
         raise HTTPException(
